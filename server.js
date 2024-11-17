@@ -31,7 +31,7 @@ const limiter = rateLimit({
 // CORS configuration
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production' 
-    ? ['https://your-domain.com'] 
+    ? ['https://ai-paraphrasing-tool-pro-vite.vercel.app/'] 
     : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://192.168.1.104:5173'],
   methods: ['GET', 'POST'],
   credentials: true,
