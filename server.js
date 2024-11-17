@@ -132,6 +132,13 @@ app.post('/api/paraphrase', async (req, res) => {
       return res.status(500).json({ error: 'Invalid response format from OpenAI API' });
     }
 
+    const data = JSON.parse(rawData);
+
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error('Invalid or empty response from OpenAI API');
+    }
+    
+
     // Send the paraphrased text back to the frontend
     res.json({ 
       paraphrasedText: data.choices[0].message.content.trim() 
