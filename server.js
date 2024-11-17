@@ -4,6 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import fetch from 'node-fetch'; // Ensure you have node-fetch installed
 
 dotenv.config();
 
@@ -13,29 +14,37 @@ const __dirname = dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Trust first proxy for rate limiter
+// Trust first proxy for rate limiter (useful if behind a proxy like Vercel)
 app.set('trust proxy', 1);
 
 // Rate limiting middleware
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 50,
-  standardHeaders: true,
-  legacyHeaders: false,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50, // limit each IP to 50 requests per windowMs
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   message: { error: 'Too many requests, please try again later.' },
-  keyGenerator: (req) => {
-    return req.ip || req.connection.remoteAddress;
-  }
+  keyGenerator: (req) => req.ip || 'unknown', // Use req.ip as the key
 });
 
 // CORS configuration
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://ai-paraphrasing-tool-pro-vite.vercel.app/'] 
-    : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://192.168.1.104:5173'],
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'https://ai-paraphrasing-tool-pro-vite.vercel.app',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'http://192.168.1.104:5173',
+    ];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST'],
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
 };
 
 // Middleware
@@ -56,24 +65,28 @@ app.post('/api/paraphrase', async (req, res) => {
   try {
     const { text, targetLanguage, tone, lengthPreference } = req.body;
 
+    // Input validation
     if (!text || !targetLanguage || !tone || !lengthPreference) {
       return res.status(400).json({ 
-        error: 'Missing required fields' 
+        error: 'Missing required fields: text, targetLanguage, tone, lengthPreference' 
       });
     }
 
-    const apiKey = process.env.VITE_OPENAI_API_KEY;
+    // Retrieve the API key from environment variables
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
+      console.error('OpenAI API key not configured.');
       return res.status(500).json({ 
-        error: 'OpenAI API key not configured' 
+        error: 'OpenAI API key not configured.' 
       });
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    // Prepare the request to OpenAI API
+    const openAIResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: 'gpt-3.5-turbo',
@@ -81,38 +94,45 @@ app.post('/api/paraphrase', async (req, res) => {
           {
             role: 'system',
             content: `You are a professional paraphrasing assistant. Follow these guidelines:
-              - Ensure the result is grammatically correct. Improve it by correcting any spelling and grammar mistakes and enhancing the    sentence structure as needed
+              - Ensure the result is grammatically correct. Improve it by correcting any spelling and grammar mistakes and enhancing the sentence structure as needed.
               - Simplify Language: Replace complex words with simpler alternatives that maintain the original meaning.
-              - Vary Sentence Structure: Use a mix of short and long sentences, and incorporate varied sentence beginnings to enhance flow
-              - Keep the tone ${tone}
-              - Make the text ${lengthPreference} than the original
-              - Translate to ${targetLanguage} if different from source
+              - Vary Sentence Structure: Use a mix of short and long sentences, and incorporate varied sentence beginnings to enhance flow.
+              - Keep the tone ${tone}.
+              - Make the text ${lengthPreference} than the original.
+              - Translate to ${targetLanguage} if different from source.
               - Review for Coherence: After rewriting, ensure that the text flows logically and retains the original message.
-              - Maintain technical accuracy
+              - Maintain technical accuracy.
               - Use Active Voice: Favor active voice over passive voice to create a more direct and dynamic writing style.
-              - Remove redundancies`
+              - Remove redundancies.`,
           },
           {
             role: 'user',
-            content: text
-          }
+            content: text,
+          },
         ],
         temperature: 0.7,
-        max_tokens: 2048
-      })
+        max_tokens: 2048,
+      }),
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || 'OpenAI API request failed');
+    // Handle non-OK responses
+    if (!openAIResponse.ok) {
+      const errorData = await openAIResponse.json();
+      console.error('OpenAI API Error:', errorData);
+      return res.status(openAIResponse.status).json({ 
+        error: errorData.error?.message || 'OpenAI API request failed' 
+      });
     }
 
-    const data = await response.json();
-    
+    const data = await openAIResponse.json();
+
+    // Validate response format
     if (!data.choices?.[0]?.message?.content) {
-      throw new Error('Invalid response format from OpenAI API');
+      console.error('Invalid response format from OpenAI API:', data);
+      return res.status(500).json({ error: 'Invalid response format from OpenAI API' });
     }
 
+    // Send the paraphrased text back to the frontend
     res.json({ 
       paraphrasedText: data.choices[0].message.content.trim() 
     });
@@ -131,9 +151,9 @@ app.get('*', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
+  console.error('Error:', err.message);
   res.status(500).json({ 
-    error: err instanceof Error ? err.message : 'Internal Server Error' 
+    error: process.env.NODE_ENV === 'production' ? 'Internal Server Error' : err.message,
   });
 });
 
@@ -146,10 +166,13 @@ const server = app.listen(port, '0.0.0.0', () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
+const gracefulShutdown = () => {
+  console.log('Shutting down gracefully...');
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
   });
-});
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
